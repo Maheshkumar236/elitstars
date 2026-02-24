@@ -1,0 +1,461 @@
+<!DOCTYPE html>
+<html lang="hi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ELITE STAR - Professional Tournament Platform</title>
+    <!-- Tailwind CSS for modern styling -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <!-- Firebase SDKs -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, onAuthStateChanged, signInAnonymously, signOut } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, setDoc, getDoc, onSnapshot, collection, query, runTransaction, addDoc, serverTimestamp, deleteDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // Firebase Config (Aap apna yahan paste karein)
+       const firebaseConfig = {
+  apiKey: "AIzaSyAeZB7TR7BsbNX8QEK_7LedvLSBWm6Mg0U",
+  authDomain: "elit-stars.firebaseapp.com",
+  projectId: "elit-stars",
+  storageBucket: "elit-stars.firebasestorage.app",
+  messagingSenderId: "931277287871",
+  appId: "1:931277287871:web:12fb474127d168206eb10a",
+  measurementId: "G-0G907B0R8S"
+};
+        // --- GLOBAL STATE ---
+        let currentUser = null;
+        let userData = null;
+        let activeTab = 'home';
+        const AUTHORIZED_ADMINS = ["6394562344", "9170744521"];
+        const ADMIN_FIXED_PASSWORD = "ELITE_ADMIN_SECURE";
+
+        // --- APP INITIALIZATION ---
+        window.onload = async () => {
+            // Start Lucide Icons
+            lucide.createIcons();
+            
+            // Initial Splash Screen
+            setTimeout(() => {
+                document.getElementById('splash-screen').classList.add('hidden');
+                document.getElementById('app-container').classList.remove('hidden');
+            }, 2500);
+
+            // Auth Listener
+            onAuthStateChanged(auth, async (user) => {
+                if (user) {
+                    currentUser = user;
+                    await syncProfile(user.uid);
+                } else {
+                    await signInAnonymously(auth);
+                }
+            });
+        };
+
+        // --- PROFILE SYNC (Rule 1 & Rule 3) ---
+        async function syncProfile(uid) {
+            const userRef = doc(db, 'artifacts', appId, 'users', uid, 'profile', 'details');
+            onSnapshot(userRef, (snap) => {
+                if (snap.exists()) {
+                    userData = snap.data();
+                    renderUI();
+                } else {
+                    // Default Register (Logic stored in doc for session)
+                    setDoc(userRef, {
+                        uid, username: 'New Player', walletBalance: 100,
+                        role: 'user', joinDate: new Date().toISOString(), phone: ''
+                    });
+                }
+            });
+        }
+
+        // --- NAVIGATION LOGIC ---
+        window.switchTab = (tab) => {
+            activeTab = tab;
+            renderUI();
+        };
+
+        // --- TOURNAMENT JOINING (Atomic Transaction) ---
+        window.joinMatch = async (matchId, fee, slotNum) => {
+            if (!userData.phone) {
+                showToast("Pehle Login/Register karein!", "error");
+                return;
+            }
+            if (userData.walletBalance < fee) {
+                showToast("Balance kam hai!", "error");
+                return;
+            }
+
+            const ign = prompt("In-Game Name (IGN) daalein:");
+            const playerUid = prompt("Free Fire Player UID daalein:");
+            const level = prompt("Combat Level daalein:");
+
+            if (!ign || !playerUid || !level) return;
+
+            try {
+                await runTransaction(db, async (transaction) => {
+                    const userRef = doc(db, 'artifacts', appId, 'users', currentUser.uid, 'profile', 'details');
+                    const matchRef = doc(db, 'artifacts', appId, 'public', 'data', 'matches', matchId);
+                    
+                    const userSnap = await transaction.get(userRef);
+                    const matchSnap = await transaction.get(matchRef);
+
+                    const balance = userSnap.data().walletBalance;
+                    const slotsData = matchSnap.data().slotsData || {};
+
+                    if (slotsData[slotNum]) throw "Slot already taken!";
+                    if (balance < fee) throw "Insufficient funds!";
+
+                    transaction.update(userRef, { walletBalance: balance - fee });
+                    transaction.update(matchRef, {
+                        joined: (matchSnap.data().joined || 0) + 1,
+                        [`slotsData.${slotNum}`]: { ign, uid: playerUid, level, timestamp: new Date().toISOString() }
+                    });
+                });
+                showToast("Match Joined Successfully!", "success");
+            } catch (e) {
+                showToast(e, "error");
+            }
+        };
+
+        // --- AI STRATEGY (Gemini API) ---
+        window.getAiStrategy = async (title) => {
+            const btn = event.currentTarget;
+            btn.classList.add('animate-spin');
+            
+            const prompt = `Give a 2-sentence winning strategy for Free Fire tournament: ${title}`;
+            const systemPrompt = "You are an Elite Gaming Coach.";
+            
+            try {
+                const apiKey = ""; // Runtime provides this
+                const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
+                const response = await fetch(url, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        contents: [{ parts: [{ text: prompt }] }],
+                        systemInstruction: { parts: [{ text: systemPrompt }] }
+                    })
+                });
+                const result = await response.json();
+                const tip = result.candidates[0].content.parts[0].text;
+                document.getElementById('ai-tip-box').innerHTML = `✨ AI Strategy: ${tip}`;
+                document.getElementById('ai-tip-box').classList.remove('hidden');
+            } catch (e) {
+                showToast("AI Busy...", "error");
+            } finally {
+                btn.classList.remove('animate-spin');
+            }
+        };
+
+        // --- AUTH LOGIC (Admin Check) ---
+        window.handleLogin = async () => {
+            const phone = document.getElementById('login-phone').value;
+            const pass = document.getElementById('login-pass').value;
+
+            if (AUTHORIZED_ADMINS.includes(phone)) {
+                if (pass === ADMIN_FIXED_PASSWORD) {
+                    const userRef = doc(db, 'artifacts', appId, 'users', currentUser.uid, 'profile', 'details');
+                    await updateDoc(userRef, { phone, role: 'admin', username: 'System Admin' });
+                    showToast("Admin access granted!", "success");
+                } else {
+                    showToast("Invalid Admin Password", "error");
+                }
+            } else {
+                const userRef = doc(db, 'artifacts', appId, 'users', currentUser.uid, 'profile', 'details');
+                await updateDoc(userRef, { phone, password: pass });
+                showToast("Login/Update Success", "success");
+            }
+        };
+
+        // --- UI RENDERING ---
+        function renderUI() {
+            if (!userData) return;
+
+            // Render Navigation visibility
+            const adminIcon = document.getElementById('nav-admin');
+            if (AUTHORIZED_ADMINS.includes(userData.phone)) adminIcon.classList.remove('hidden');
+            else adminIcon.classList.add('hidden');
+
+            // Render Screens
+            const screens = ['home-screen', 'wallet-screen', 'comms-screen', 'profile-screen', 'admin-screen', 'search-screen'];
+            screens.forEach(s => document.getElementById(s).classList.add('hidden'));
+            document.getElementById(`${activeTab}-screen`).classList.remove('hidden');
+
+            // Update Header
+            document.getElementById('header-balance').innerText = `₹${userData.walletBalance}`;
+
+            // Tab-specific loading
+            if (activeTab === 'home') renderMatches();
+            if (activeTab === 'admin') renderAdminView();
+            if (activeTab === 'profile') renderProfile();
+
+            lucide.createIcons();
+        }
+
+        async function renderMatches() {
+            const q = query(collection(db, 'artifacts', appId, 'public', 'data', 'matches'));
+            const container = document.getElementById('matches-grid');
+            
+            onSnapshot(q, (snap) => {
+                container.innerHTML = '';
+                snap.forEach(doc => {
+                    const m = doc.data();
+                    const card = `
+                        <div class="bg-white/5 backdrop-blur-xl border border-white/10 rounded-[2rem] p-6 hover:border-red-500/30 transition-all">
+                            <div class="flex justify-between items-start mb-4">
+                                <h3 class="text-xl font-black italic text-white uppercase">${m.title}</h3>
+                                <button onclick="getAiStrategy('${m.title}')" class="p-2 text-cyan-400 hover:bg-cyan-500/10 rounded-xl">
+                                    <i data-lucide="sparkles" class="w-4 h-4"></i>
+                                </button>
+                            </div>
+                            <div class="flex space-x-2 mb-4">
+                                <span class="bg-red-600/20 text-red-500 px-2 py-0.5 rounded text-[10px] font-black uppercase">${m.mode}</span>
+                                <span class="bg-white/5 text-gray-500 px-2 py-0.5 rounded text-[10px] font-black uppercase">${m.map}</span>
+                            </div>
+                            <div class="grid grid-cols-3 gap-2 mb-6 text-[10px] font-black uppercase tracking-widest text-gray-400 text-center">
+                                <div>POOL<br><span class="text-green-500">₹${m.prize}</span></div>
+                                <div>FEE<br><span class="text-white">₹${m.fee}</span></div>
+                                <div>SLOTS<br><span class="text-red-500">${m.joined || 0}/${m.slots}</span></div>
+                            </div>
+                            <button onclick="openSlotSelector('${doc.id}', ${m.fee}, ${m.slots}, '${encodeURIComponent(JSON.stringify(m.slotsData || {}))}')" class="w-full bg-gradient-to-r from-red-600 to-orange-600 py-2 rounded-xl text-white font-bold uppercase text-xs">JOIN ARENA</button>
+                        </div>
+                    `;
+                    container.innerHTML += card;
+                });
+                lucide.createIcons();
+            });
+        }
+
+        window.openSlotSelector = (id, fee, total, slotsDataRaw) => {
+            const slotsData = JSON.parse(decodeURIComponent(slotsDataRaw));
+            let html = `<div class="grid grid-cols-8 gap-2 p-4">`;
+            for(let i=1; i<=total; i++) {
+                const isTaken = slotsData[i];
+                html += `<div onclick="${isTaken ? '' : `joinMatch('${id}', ${fee}, ${i})`}" class="aspect-square border rounded-lg flex items-center justify-center text-[10px] font-black cursor-pointer ${isTaken ? 'bg-red-900/40 text-red-500 border-red-500/20' : 'bg-white/5 border-white/10 hover:border-red-500'}">${i}</div>`;
+            }
+            html += `</div>`;
+            document.getElementById('slot-modal-body').innerHTML = html;
+            document.getElementById('slot-modal').classList.remove('hidden');
+        };
+
+        window.closeModal = () => document.getElementById('slot-modal').classList.add('hidden');
+
+        function renderProfile() {
+            document.getElementById('profile-name').innerText = userData.username;
+            document.getElementById('profile-phone').innerText = userData.phone || 'Node Unlinked';
+        }
+
+        async function renderAdminView() {
+            const q = query(collection(db, 'artifacts', appId, 'public', 'data', 'matches'));
+            const container = document.getElementById('admin-matches-list');
+            
+            onSnapshot(q, (snap) => {
+                container.innerHTML = '';
+                snap.forEach(d => {
+                    const m = d.data();
+                    container.innerHTML += `
+                        <div class="bg-black/40 p-4 rounded-2xl border border-white/5 mb-4">
+                            <div class="flex justify-between">
+                                <h4 class="font-black italic uppercase text-red-500">${m.title}</h4>
+                                <button onclick="deleteMatch('${d.id}')" class="text-red-500"><i data-lucide="trash-2" class="w-4 h-4"></i></button>
+                            </div>
+                            <div class="mt-2 text-[10px] text-gray-500 uppercase font-black">
+                                Joined: ${m.joined || 0} / Slots: ${m.slots}
+                            </div>
+                        </div>
+                    `;
+                });
+                lucide.createIcons();
+            });
+        }
+
+        window.createNewMatch = async () => {
+            const title = prompt("Match Title:");
+            const fee = Number(prompt("Entry Fee:"));
+            const prize = Number(prompt("Prize Pool:"));
+            const map = prompt("Map (Bermuda/Purgatory):");
+            if(!title) return;
+            
+            await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'matches'), {
+                title, fee, prize, map, mode: 'Solo', slots: 48, joined: 0, slotsData: {}, createdAt: serverTimestamp()
+            });
+            showToast("Match Deployed!");
+        };
+
+        window.deleteMatch = async (id) => {
+            if(confirm("Confirm deletion?")) await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'matches', id));
+        };
+
+        window.showToast = (msg, type) => {
+            const t = document.getElementById('toast');
+            t.innerText = msg.toUpperCase();
+            t.className = `fixed bottom-24 right-8 z-[100] px-6 py-4 rounded-xl font-bold text-xs backdrop-blur-xl border border-white/10 shadow-2xl transition-all ${type==='error'?'bg-red-600/20 text-red-500 border-red-500/40':'bg-green-600/20 text-green-500 border-green-500/40'}`;
+            t.classList.remove('hidden');
+            setTimeout(() => t.classList.add('hidden'), 3000);
+        };
+
+        window.handleLogout = () => signOut(auth);
+
+    </script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;700;900&display=swap');
+        body { font-family: 'Inter', sans-serif; background: #06080F; color: white; margin: 0; overflow: hidden; }
+        .scrollbar-hide::-webkit-scrollbar { display: none; }
+        .glass { background: rgba(255, 255, 255, 0.05); backdrop-filter: blur(20px); border: 1px solid rgba(255, 255, 255, 0.1); }
+        .neon-border { box-shadow: 0 0 15px rgba(220, 38, 38, 0.3); }
+        @keyframes loading { 0% { left: -100%; } 100% { left: 100%; } }
+        .loader-bar::after { content: ''; position: absolute; height: 100%; width: 50%; background: #DC2626; animation: loading 1.5s infinite linear; }
+    </style>
+</head>
+<body>
+
+    <!-- Splash Screen -->
+    <div id="splash-screen" class="fixed inset-0 z-[200] bg-[#06080F] flex flex-col items-center justify-center">
+        <div class="relative mb-6">
+            <div class="absolute -inset-8 bg-red-600/20 blur-[80px] rounded-full animate-pulse"></div>
+            <i data-lucide="trophy" class="w-24 h-24 text-red-600 relative"></i>
+        </div>
+        <h1 class="text-6xl font-black italic tracking-tighter">ELITE STAR</h1>
+        <div class="w-48 h-1 bg-white/5 rounded-full mt-10 overflow-hidden relative loader-bar"></div>
+    </div>
+
+    <!-- Main App Container -->
+    <div id="app-container" class="hidden h-screen flex relative">
+        <!-- Background FX -->
+        <div class="fixed inset-0 pointer-events-none">
+            <div class="absolute top-0 right-0 w-[500px] h-[500px] bg-red-600/10 blur-[150px] animate-pulse rounded-full"></div>
+            <div class="absolute bottom-0 left-0 w-[500px] h-[500px] bg-orange-600/10 blur-[150px] animate-pulse rounded-full"></div>
+        </div>
+
+        <!-- Sidebar Navigation -->
+        <nav class="hidden lg:flex w-24 flex-col items-center py-8 bg-black/40 backdrop-blur-3xl border-r border-white/5 z-50">
+            <div class="mb-12"><i data-lucide="zap" class="text-red-600 w-8 h-8"></i></div>
+            <div class="flex flex-col space-y-8 flex-1">
+                <button onclick="switchTab('home')" class="p-4 rounded-2xl transition-all hover:bg-white/5 text-gray-500 hover:text-white"><i data-lucide="layout"></i></button>
+                <button onclick="switchTab('comms')" class="p-4 rounded-2xl transition-all hover:bg-white/5 text-gray-500 hover:text-white"><i data-lucide="message-square"></i></button>
+                <button onclick="switchTab('wallet')" class="p-4 rounded-2xl transition-all hover:bg-white/5 text-gray-500 hover:text-white"><i data-lucide="wallet"></i></button>
+                <button onclick="switchTab('search')" class="p-4 rounded-2xl transition-all hover:bg-white/5 text-gray-500 hover:text-white"><i data-lucide="search"></i></button>
+            </div>
+            <div class="flex flex-col space-y-6">
+                <button id="nav-admin" onclick="switchTab('admin')" class="hidden p-4 rounded-2xl transition-all hover:bg-red-600/10 text-red-500"><i data-lucide="shield"></i></button>
+                <button onclick="switchTab('profile')" class="p-4 rounded-2xl transition-all hover:bg-white/5 text-gray-500 hover:text-white"><i data-lucide="user"></i></button>
+            </div>
+        </nav>
+
+        <!-- Content Area -->
+        <div class="flex-1 flex flex-col min-w-0 z-40 relative">
+            <header class="h-20 flex items-center justify-between px-8 bg-white/5 backdrop-blur-md border-b border-white/5">
+                <h1 class="text-2xl font-black italic tracking-tighter text-red-500 uppercase">Elite Star</h1>
+                <div class="flex items-center space-x-6">
+                    <div class="bg-white/5 border border-white/10 px-4 py-2 rounded-2xl flex items-center space-x-3">
+                        <i data-lucide="wallet" class="w-4 h-4 text-orange-400"></i>
+                        <span id="header-balance" class="font-mono font-bold">₹0</span>
+                    </div>
+                </div>
+            </header>
+
+            <main class="flex-1 overflow-y-auto p-8 scrollbar-hide">
+                
+                <!-- AI Tip Box -->
+                <div id="ai-tip-box" class="hidden bg-cyan-500/10 border border-cyan-500/30 p-4 rounded-2xl mb-8 text-xs italic text-cyan-100 flex items-center"></div>
+
+                <!-- Home Screen -->
+                <div id="home-screen" class="space-y-8">
+                    <h2 class="text-3xl font-black italic border-l-4 border-red-600 pl-4 uppercase tracking-tighter">Combat Lobby</h2>
+                    <div id="matches-grid" class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-8"></div>
+                </div>
+
+                <!-- Wallet Screen -->
+                <div id="wallet-screen" class="hidden max-w-xl mx-auto space-y-8 py-10">
+                    <div class="h-56 rounded-[3rem] bg-gradient-to-br from-red-600 to-orange-600 p-10 relative overflow-hidden shadow-2xl">
+                        <i data-lucide="zap" class="absolute -right-10 -top-10 w-48 h-48 opacity-10"></i>
+                        <div class="relative z-10 flex flex-col justify-between h-full">
+                            <div>
+                                <p class="text-[10px] font-black uppercase tracking-[0.3em] opacity-60">Vault Combat Credits</p>
+                                <h3 id="wallet-balance-main" class="text-6xl font-black italic tracking-tighter">₹...</h3>
+                            </div>
+                            <i data-lucide="credit-card" class="w-8 h-8 opacity-50"></i>
+                        </div>
+                    </div>
+                    <div class="grid grid-cols-2 gap-4">
+                        <button class="bg-white/5 p-6 rounded-3xl border border-white/10 flex flex-col items-center hover:bg-white/10 transition-all group">
+                            <i data-lucide="plus" class="text-red-500 mb-2 group-hover:scale-125 transition-transform"></i>
+                            <span class="text-[10px] font-black uppercase">Top Up</span>
+                        </button>
+                        <button class="bg-white/5 p-6 rounded-3xl border border-white/10 flex flex-col items-center hover:bg-white/10 transition-all group">
+                            <i data-lucide="zap" class="text-orange-500 mb-2 group-hover:scale-125 transition-transform"></i>
+                            <span class="text-[10px] font-black uppercase">Withdraw</span>
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Admin Screen -->
+                <div id="admin-screen" class="hidden space-y-8">
+                    <h2 class="text-3xl font-black italic text-red-600 uppercase">Match Control Hub</h2>
+                    <div class="grid grid-cols-1 lg:grid-cols-3 gap-8">
+                        <div class="bg-white/5 p-6 rounded-[2rem] border border-white/10 h-fit space-y-4">
+                            <h4 class="text-xs font-black uppercase opacity-50">Broadcast New Arena</h4>
+                            <button onclick="createNewMatch()" class="w-full bg-red-600 py-3 rounded-xl font-black uppercase tracking-widest text-xs">Deploy New Match</button>
+                        </div>
+                        <div id="admin-matches-list" class="lg:col-span-2"></div>
+                    </div>
+                </div>
+
+                <!-- Profile Screen -->
+                <div id="profile-screen" class="hidden max-w-xl mx-auto py-10 space-y-8">
+                    <div class="text-center">
+                        <div class="w-24 h-24 bg-white/5 rounded-3xl mx-auto flex items-center justify-center border-2 border-red-600 mb-6 shadow-2xl">
+                            <i data-lucide="user" class="w-12 h-12 text-gray-500"></i>
+                        </div>
+                        <h2 id="profile-name" class="text-3xl font-black italic uppercase tracking-tighter">...</h2>
+                        <p id="profile-phone" class="text-[10px] font-black uppercase tracking-widest text-gray-500 mt-2 italic"></p>
+                    </div>
+
+                    <div class="bg-white/5 p-8 rounded-[2rem] border border-white/10 space-y-6">
+                        <div class="space-y-4">
+                            <h4 class="text-xs font-black uppercase tracking-widest opacity-50">Authentication Required</h4>
+                            <input id="login-phone" type="tel" placeholder="Mobile Number" class="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-3 text-sm focus:border-red-500 transition-colors">
+                            <input id="login-pass" type="password" placeholder="Set Secure Password" class="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-3 text-sm focus:border-red-500 transition-colors">
+                            <button onclick="handleLogin()" class="w-full bg-white/5 border border-white/10 py-3 rounded-xl text-[10px] font-black uppercase tracking-widest hover:bg-white/10 transition-colors">Update Node Node</button>
+                        </div>
+                        <button onclick="handleLogout()" class="w-full flex items-center justify-center space-x-2 text-red-500 font-black text-[10px] uppercase tracking-widest pt-4 border-t border-white/5">
+                            <i data-lucide="log-out" class="w-4 h-4"></i> <span>Terminate Session</span>
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Comms/Search Placeholders -->
+                <div id="comms-screen" class="hidden h-full flex flex-col items-center justify-center opacity-30 grayscale"><i data-lucide="message-square" class="w-24 h-24 mb-4"></i><p class="font-black uppercase tracking-widest">Signal Encrypted</p></div>
+                <div id="search-screen" class="hidden h-full flex flex-col items-center justify-center opacity-30 grayscale"><i data-lucide="target" class="w-24 h-24 mb-4"></i><p class="font-black uppercase tracking-widest">Scanning Signals...</p></div>
+
+            </main>
+
+            <!-- Mobile Navbar -->
+            <footer class="lg:hidden h-20 bg-black/60 backdrop-blur-3xl border-t border-white/10 flex items-center justify-around px-2 z-50">
+                <button onclick="switchTab('home')" class="p-3 text-gray-500 hover:text-white transition-all"><i data-lucide="layout"></i></button>
+                <button onclick="switchTab('wallet')" class="p-3 text-gray-500 hover:text-white transition-all"><i data-lucide="wallet"></i></button>
+                <button onclick="switchTab('search')" class="p-3 text-gray-500 hover:text-white transition-all"><i data-lucide="search"></i></button>
+                <button onclick="switchTab('profile')" class="p-3 text-gray-500 hover:text-white transition-all"><i data-lucide="user"></i></button>
+            </footer>
+        </div>
+    </div>
+
+    <!-- Modal for Slots -->
+    <div id="slot-modal" class="hidden fixed inset-0 z-[150] bg-black/80 backdrop-blur-sm flex items-center justify-center p-6">
+        <div class="bg-[#0A0E17] border border-white/10 rounded-[2.5rem] w-full max-w-2xl overflow-hidden shadow-2xl">
+            <div class="p-6 border-b border-white/5 flex justify-between items-center">
+                <h3 class="font-black italic uppercase tracking-tighter text-red-500">Select Combat Slot</h3>
+                <button onclick="closeModal()"><i data-lucide="x" class="w-6 h-6 text-gray-500"></i></button>
+            </div>
+            <div id="slot-modal-body" class="max-h-[60vh] overflow-y-auto scrollbar-hide"></div>
+            <div class="p-6 bg-white/5 text-[10px] font-black uppercase text-gray-500 italic">Rules: Entry fee will be auto-debited.</div>
+        </div>
+    </div>
+
+    <!-- Global Toast -->
+    <div id="toast" class="hidden"></div>
+
+</body>
+</html>
