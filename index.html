@@ -12,10 +12,10 @@
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { getAuth, onAuthStateChanged, signInAnonymously, signOut } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, doc, setDoc, getDoc, onSnapshot, collection, query, runTransaction, addDoc, serverTimestamp, deleteDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { getFirestore, doc, setDoc, getDoc, onSnapshot, collection, query, runTransaction, addDoc, serverTimestamp, deleteDoc, updateDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
-        // Firebase Config (Aap apna yahan paste karein)
-       const firebaseConfig = {
+        // Firebase Config (Empty for runtime injection)
+const firebaseConfig = {
   apiKey: "AIzaSyAeZB7TR7BsbNX8QEK_7LedvLSBWm6Mg0U",
   authDomain: "elit-stars.firebaseapp.com",
   projectId: "elit-stars",
@@ -23,26 +23,25 @@
   messagingSenderId: "931277287871",
   appId: "1:931277287871:web:12fb474127d168206eb10a",
   measurementId: "G-0G907B0R8S"
-};
-        // --- GLOBAL STATE ---
+};        // --- GLOBAL STATE ---
         let currentUser = null;
         let userData = null;
         let activeTab = 'home';
+        let isRegistering = false; // Toggle between login/register
         const AUTHORIZED_ADMINS = ["6394562344", "9170744521"];
         const ADMIN_FIXED_PASSWORD = "ELITE_ADMIN_SECURE";
 
         // --- APP INITIALIZATION ---
         window.onload = async () => {
-            // Start Lucide Icons
             lucide.createIcons();
             
-            // Initial Splash Screen
+            // Initial Splash Screen delay
             setTimeout(() => {
                 document.getElementById('splash-screen').classList.add('hidden');
                 document.getElementById('app-container').classList.remove('hidden');
             }, 2500);
 
-            // Auth Listener
+            // Auth Listener (Rule 3)
             onAuthStateChanged(auth, async (user) => {
                 if (user) {
                     currentUser = user;
@@ -53,7 +52,7 @@
             });
         };
 
-        // --- PROFILE SYNC (Rule 1 & Rule 3) ---
+        // --- PROFILE SYNC (Rule 1) ---
         async function syncProfile(uid) {
             const userRef = doc(db, 'artifacts', appId, 'users', uid, 'profile', 'details');
             onSnapshot(userRef, (snap) => {
@@ -61,37 +60,48 @@
                     userData = snap.data();
                     renderUI();
                 } else {
-                    // Default Register (Logic stored in doc for session)
+                    // Default Register for anonymous users
                     setDoc(userRef, {
                         uid, username: 'New Player', walletBalance: 100,
                         role: 'user', joinDate: new Date().toISOString(), phone: ''
                     });
                 }
+            }, (err) => {
+                console.error("Profile sync error:", err);
             });
         }
 
-        // --- NAVIGATION LOGIC ---
+        // --- NAVIGATION ---
         window.switchTab = (tab) => {
             activeTab = tab;
             renderUI();
         };
 
+        window.toggleAuthMode = () => {
+            isRegistering = !isRegistering;
+            renderUI();
+        };
+
         // --- TOURNAMENT JOINING (Atomic Transaction) ---
         window.joinMatch = async (matchId, fee, slotNum) => {
-            if (!userData.phone) {
-                showToast("Pehle Login/Register karein!", "error");
+            if (!userData || !userData.phone) {
+                showToast("Pehle Profile mein jaakar Login karein!", "error");
+                switchTab('profile');
                 return;
             }
             if (userData.walletBalance < fee) {
-                showToast("Balance kam hai!", "error");
+                showToast("Wallet balance kam hai!", "error");
                 return;
             }
 
-            const ign = prompt("In-Game Name (IGN) daalein:");
+            const ign = prompt("Free Fire In-Game Name (IGN) daalein:");
             const playerUid = prompt("Free Fire Player UID daalein:");
-            const level = prompt("Combat Level daalein:");
+            const level = prompt("In-Game Level daalein:");
 
-            if (!ign || !playerUid || !level) return;
+            if (!ign || !playerUid || !level) {
+                showToast("Details dena zaroori hai!", "error");
+                return;
+            }
 
             try {
                 await runTransaction(db, async (transaction) => {
@@ -101,19 +111,28 @@
                     const userSnap = await transaction.get(userRef);
                     const matchSnap = await transaction.get(matchRef);
 
+                    if (!matchSnap.exists()) throw "Match nahi mila!";
+
                     const balance = userSnap.data().walletBalance;
                     const slotsData = matchSnap.data().slotsData || {};
 
-                    if (slotsData[slotNum]) throw "Slot already taken!";
+                    if (slotsData[slotNum]) throw "Slot pehle se full hai!";
                     if (balance < fee) throw "Insufficient funds!";
 
                     transaction.update(userRef, { walletBalance: balance - fee });
                     transaction.update(matchRef, {
                         joined: (matchSnap.data().joined || 0) + 1,
-                        [`slotsData.${slotNum}`]: { ign, uid: playerUid, level, timestamp: new Date().toISOString() }
+                        [`slotsData.${slotNum}`]: { 
+                            ign, 
+                            uid: playerUid, 
+                            level, 
+                            playerUid: currentUser.uid,
+                            timestamp: new Date().toISOString() 
+                        }
                     });
                 });
-                showToast("Match Joined Successfully!", "success");
+                showToast("Match Successfully Join Kar Liya!", "success");
+                closeModal();
             } catch (e) {
                 showToast(e, "error");
             }
@@ -124,11 +143,11 @@
             const btn = event.currentTarget;
             btn.classList.add('animate-spin');
             
-            const prompt = `Give a 2-sentence winning strategy for Free Fire tournament: ${title}`;
-            const systemPrompt = "You are an Elite Gaming Coach.";
+            const prompt = `Give a 2-sentence winning strategy for Free Fire tournament: ${title}. Be aggressive and tactical.`;
+            const systemPrompt = "You are a professional Free Fire Coach.";
             
             try {
-                const apiKey = ""; // Runtime provides this
+                const apiKey = ""; // Provided by environment
                 const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
                 const response = await fetch(url, {
                     method: 'POST',
@@ -139,33 +158,43 @@
                     })
                 });
                 const result = await response.json();
-                const tip = result.candidates[0].content.parts[0].text;
-                document.getElementById('ai-tip-box').innerHTML = `✨ AI Strategy: ${tip}`;
+                const tip = result.candidates?.[0]?.content?.parts?.[0]?.text || "Strategy loading fail...";
+                document.getElementById('ai-tip-box').innerHTML = `✨ <strong class="text-cyan-400">AI COACH:</strong> ${tip}`;
                 document.getElementById('ai-tip-box').classList.remove('hidden');
             } catch (e) {
-                showToast("AI Busy...", "error");
+                showToast("AI Strategy limit reach...", "error");
             } finally {
                 btn.classList.remove('animate-spin');
             }
         };
 
-        // --- AUTH LOGIC (Admin Check) ---
-        window.handleLogin = async () => {
+        // --- AUTH LOGIC ---
+        window.handleAuth = async () => {
             const phone = document.getElementById('login-phone').value;
             const pass = document.getElementById('login-pass').value;
+            const username = isRegistering ? document.getElementById('login-user').value : '';
+
+            if (!phone || !pass || (isRegistering && !username)) {
+                showToast("Sabhi details bharein!", "error");
+                return;
+            }
+
+            const userRef = doc(db, 'artifacts', appId, 'users', currentUser.uid, 'profile', 'details');
 
             if (AUTHORIZED_ADMINS.includes(phone)) {
                 if (pass === ADMIN_FIXED_PASSWORD) {
-                    const userRef = doc(db, 'artifacts', appId, 'users', currentUser.uid, 'profile', 'details');
                     await updateDoc(userRef, { phone, role: 'admin', username: 'System Admin' });
-                    showToast("Admin access granted!", "success");
+                    showToast("Admin node activated!", "success");
                 } else {
-                    showToast("Invalid Admin Password", "error");
+                    showToast("Wrong Admin Password!", "error");
                 }
             } else {
-                const userRef = doc(db, 'artifacts', appId, 'users', currentUser.uid, 'profile', 'details');
-                await updateDoc(userRef, { phone, password: pass });
-                showToast("Login/Update Success", "success");
+                await updateDoc(userRef, { 
+                    phone, 
+                    password: pass, 
+                    username: isRegistering ? username : userData.username 
+                });
+                showToast(isRegistering ? "Registration Success!" : "Login Success!", "success");
             }
         };
 
@@ -173,20 +202,20 @@
         function renderUI() {
             if (!userData) return;
 
-            // Render Navigation visibility
+            // Nav visibility
             const adminIcon = document.getElementById('nav-admin');
             if (AUTHORIZED_ADMINS.includes(userData.phone)) adminIcon.classList.remove('hidden');
             else adminIcon.classList.add('hidden');
 
-            // Render Screens
+            // Tab visibility
             const screens = ['home-screen', 'wallet-screen', 'comms-screen', 'profile-screen', 'admin-screen', 'search-screen'];
             screens.forEach(s => document.getElementById(s).classList.add('hidden'));
             document.getElementById(`${activeTab}-screen`).classList.remove('hidden');
 
-            // Update Header
+            // Header updates
             document.getElementById('header-balance').innerText = `₹${userData.walletBalance}`;
 
-            // Tab-specific loading
+            // Screen specific render
             if (activeTab === 'home') renderMatches();
             if (activeTab === 'admin') renderAdminView();
             if (activeTab === 'profile') renderProfile();
@@ -200,26 +229,30 @@
             
             onSnapshot(q, (snap) => {
                 container.innerHTML = '';
-                snap.forEach(doc => {
-                    const m = doc.data();
+                if (snap.empty) {
+                    container.innerHTML = '<p class="text-gray-500 italic col-span-full text-center">Koi match available nahi hai...</p>';
+                    return;
+                }
+                snap.forEach(docSnap => {
+                    const m = docSnap.data();
                     const card = `
-                        <div class="bg-white/5 backdrop-blur-xl border border-white/10 rounded-[2rem] p-6 hover:border-red-500/30 transition-all">
+                        <div class="bg-white/5 backdrop-blur-xl border border-white/10 rounded-[2.5rem] p-6 hover:border-red-500/30 transition-all group">
                             <div class="flex justify-between items-start mb-4">
-                                <h3 class="text-xl font-black italic text-white uppercase">${m.title}</h3>
-                                <button onclick="getAiStrategy('${m.title}')" class="p-2 text-cyan-400 hover:bg-cyan-500/10 rounded-xl">
+                                <h3 class="text-xl font-black italic text-white uppercase tracking-tighter">${m.title}</h3>
+                                <button onclick="getAiStrategy('${m.title}')" class="p-2 text-cyan-400 hover:bg-cyan-500/10 rounded-xl transition-colors">
                                     <i data-lucide="sparkles" class="w-4 h-4"></i>
                                 </button>
                             </div>
                             <div class="flex space-x-2 mb-4">
-                                <span class="bg-red-600/20 text-red-500 px-2 py-0.5 rounded text-[10px] font-black uppercase">${m.mode}</span>
-                                <span class="bg-white/5 text-gray-500 px-2 py-0.5 rounded text-[10px] font-black uppercase">${m.map}</span>
+                                <span class="bg-red-600/20 text-red-500 px-2 py-0.5 rounded text-[10px] font-black uppercase tracking-widest">${m.mode}</span>
+                                <span class="bg-white/5 text-gray-500 px-2 py-0.5 rounded text-[10px] font-black uppercase tracking-widest">${m.map}</span>
                             </div>
-                            <div class="grid grid-cols-3 gap-2 mb-6 text-[10px] font-black uppercase tracking-widest text-gray-400 text-center">
-                                <div>POOL<br><span class="text-green-500">₹${m.prize}</span></div>
-                                <div>FEE<br><span class="text-white">₹${m.fee}</span></div>
-                                <div>SLOTS<br><span class="text-red-500">${m.joined || 0}/${m.slots}</span></div>
+                            <div class="grid grid-cols-3 gap-2 mb-6 text-[10px] font-black uppercase tracking-widest text-gray-400 text-center bg-black/20 p-3 rounded-2xl">
+                                <div>POOL<br><span class="text-green-500 text-sm">₹${m.prize}</span></div>
+                                <div>FEE<br><span class="text-white text-sm">₹${m.fee}</span></div>
+                                <div>SLOTS<br><span class="text-red-500 text-sm">${m.joined || 0}/${m.slots}</span></div>
                             </div>
-                            <button onclick="openSlotSelector('${doc.id}', ${m.fee}, ${m.slots}, '${encodeURIComponent(JSON.stringify(m.slotsData || {}))}')" class="w-full bg-gradient-to-r from-red-600 to-orange-600 py-2 rounded-xl text-white font-bold uppercase text-xs">JOIN ARENA</button>
+                            <button onclick="openSlotSelector('${docSnap.id}', ${m.fee}, ${m.slots}, '${encodeURIComponent(JSON.stringify(m.slotsData || {}))}')" class="w-full bg-gradient-to-r from-red-600 to-orange-600 py-3 rounded-xl text-white font-black uppercase text-xs tracking-[0.2em] shadow-lg group-hover:shadow-red-600/20 transition-all">JOIN ARENA</button>
                         </div>
                     `;
                     container.innerHTML += card;
@@ -230,10 +263,15 @@
 
         window.openSlotSelector = (id, fee, total, slotsDataRaw) => {
             const slotsData = JSON.parse(decodeURIComponent(slotsDataRaw));
-            let html = `<div class="grid grid-cols-8 gap-2 p-4">`;
+            let html = `<div class="grid grid-cols-6 md:grid-cols-10 gap-3 p-6">`;
             for(let i=1; i<=total; i++) {
                 const isTaken = slotsData[i];
-                html += `<div onclick="${isTaken ? '' : `joinMatch('${id}', ${fee}, ${i})`}" class="aspect-square border rounded-lg flex items-center justify-center text-[10px] font-black cursor-pointer ${isTaken ? 'bg-red-900/40 text-red-500 border-red-500/20' : 'bg-white/5 border-white/10 hover:border-red-500'}">${i}</div>`;
+                html += `
+                    <div onclick="${isTaken ? '' : `joinMatch('${id}', ${fee}, ${i})`}" 
+                         class="aspect-square border rounded-xl flex items-center justify-center text-xs font-black cursor-pointer transition-all
+                         ${isTaken ? 'bg-red-900/40 text-red-500 border-red-500/20 cursor-not-allowed' : 'bg-white/5 border-white/10 hover:border-red-500 hover:scale-105'}">
+                         ${i}
+                    </div>`;
             }
             html += `</div>`;
             document.getElementById('slot-modal-body').innerHTML = html;
@@ -244,7 +282,19 @@
 
         function renderProfile() {
             document.getElementById('profile-name').innerText = userData.username;
-            document.getElementById('profile-phone').innerText = userData.phone || 'Node Unlinked';
+            document.getElementById('profile-phone-display').innerText = userData.phone || 'Node Unlinked (Pehle Login karein)';
+            
+            // Toggle Login/Register UI
+            const userInp = document.getElementById('login-user-group');
+            if (isRegistering) {
+                userInp.classList.remove('hidden');
+                document.getElementById('auth-btn-text').innerText = 'CREATE ACCOUNT';
+                document.getElementById('auth-toggle-text').innerText = 'Already have an account? Login';
+            } else {
+                userInp.classList.add('hidden');
+                document.getElementById('auth-btn-text').innerText = 'ACCESS NODE';
+                document.getElementById('auth-toggle-text').innerText = 'New player? Register';
+            }
         }
 
         async function renderAdminView() {
@@ -256,14 +306,14 @@
                 snap.forEach(d => {
                     const m = d.data();
                     container.innerHTML += `
-                        <div class="bg-black/40 p-4 rounded-2xl border border-white/5 mb-4">
-                            <div class="flex justify-between">
-                                <h4 class="font-black italic uppercase text-red-500">${m.title}</h4>
-                                <button onclick="deleteMatch('${d.id}')" class="text-red-500"><i data-lucide="trash-2" class="w-4 h-4"></i></button>
+                        <div class="bg-black/40 p-5 rounded-[2rem] border border-white/5 mb-4 flex justify-between items-center group">
+                            <div>
+                                <h4 class="font-black italic uppercase text-red-500 tracking-tight">${m.title}</h4>
+                                <p class="text-[10px] text-gray-500 font-bold uppercase tracking-widest mt-1">Status: ${m.joined || 0}/${m.slots} Players</p>
                             </div>
-                            <div class="mt-2 text-[10px] text-gray-500 uppercase font-black">
-                                Joined: ${m.joined || 0} / Slots: ${m.slots}
-                            </div>
+                            <button onclick="deleteMatch('${d.id}')" class="p-3 bg-red-500/10 text-red-500 rounded-xl hover:bg-red-500 hover:text-white transition-all">
+                                <i data-lucide="trash-2" class="w-4 h-4"></i>
+                            </button>
                         </div>
                     `;
                 });
@@ -272,31 +322,41 @@
         }
 
         window.createNewMatch = async () => {
-            const title = prompt("Match Title:");
-            const fee = Number(prompt("Entry Fee:"));
-            const prize = Number(prompt("Prize Pool:"));
-            const map = prompt("Map (Bermuda/Purgatory):");
-            if(!title) return;
+            const title = prompt("Tournament Title daalein:");
+            const fee = Number(prompt("Entry Fee (Numbers):"));
+            const prize = Number(prompt("Prize Pool (Numbers):"));
+            const map = prompt("Map (e.g. Bermuda, Purgatory):");
+            if(!title || isNaN(fee) || isNaN(prize)) return;
             
             await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'matches'), {
-                title, fee, prize, map, mode: 'Solo', slots: 48, joined: 0, slotsData: {}, createdAt: serverTimestamp()
+                title, fee, prize, map: map || 'Bermuda', mode: 'Solo', slots: 48, joined: 0, slotsData: {}, createdAt: serverTimestamp()
             });
-            showToast("Match Deployed!");
+            showToast("Combat Match Deployed!", "success");
         };
 
         window.deleteMatch = async (id) => {
-            if(confirm("Confirm deletion?")) await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'matches', id));
+            if(confirm("Kya aap is match ko terminate karna chahte hain?")) {
+                await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'matches', id));
+                showToast("Match Deleted", "info");
+            }
         };
 
         window.showToast = (msg, type) => {
             const t = document.getElementById('toast');
             t.innerText = msg.toUpperCase();
-            t.className = `fixed bottom-24 right-8 z-[100] px-6 py-4 rounded-xl font-bold text-xs backdrop-blur-xl border border-white/10 shadow-2xl transition-all ${type==='error'?'bg-red-600/20 text-red-500 border-red-500/40':'bg-green-600/20 text-green-500 border-green-500/40'}`;
-            t.classList.remove('hidden');
-            setTimeout(() => t.classList.add('hidden'), 3000);
+            t.className = `fixed bottom-24 right-8 z-[100] px-6 py-4 rounded-2xl font-black text-[10px] tracking-widest backdrop-blur-xl border border-white/10 shadow-2xl transition-all duration-500 ${type==='error'?'bg-red-600/20 text-red-500 border-red-500/40':'bg-green-600/20 text-green-500 border-green-500/40'}`;
+            t.classList.remove('hidden', 'translate-x-full');
+            setTimeout(() => {
+                t.classList.add('translate-x-full');
+                setTimeout(() => t.classList.add('hidden'), 500);
+            }, 3000);
         };
 
-        window.handleLogout = () => signOut(auth);
+        window.handleLogout = () => {
+            signOut(auth).then(() => {
+                window.location.reload();
+            });
+        };
 
     </script>
     <style>
@@ -304,157 +364,196 @@
         body { font-family: 'Inter', sans-serif; background: #06080F; color: white; margin: 0; overflow: hidden; }
         .scrollbar-hide::-webkit-scrollbar { display: none; }
         .glass { background: rgba(255, 255, 255, 0.05); backdrop-filter: blur(20px); border: 1px solid rgba(255, 255, 255, 0.1); }
-        .neon-border { box-shadow: 0 0 15px rgba(220, 38, 38, 0.3); }
         @keyframes loading { 0% { left: -100%; } 100% { left: 100%; } }
         .loader-bar::after { content: ''; position: absolute; height: 100%; width: 50%; background: #DC2626; animation: loading 1.5s infinite linear; }
     </style>
 </head>
-<body>
+<body class="selection:bg-red-600/30">
 
     <!-- Splash Screen -->
     <div id="splash-screen" class="fixed inset-0 z-[200] bg-[#06080F] flex flex-col items-center justify-center">
         <div class="relative mb-6">
-            <div class="absolute -inset-8 bg-red-600/20 blur-[80px] rounded-full animate-pulse"></div>
-            <i data-lucide="trophy" class="w-24 h-24 text-red-600 relative"></i>
+            <div class="absolute -inset-10 bg-red-600/20 blur-[100px] rounded-full animate-pulse"></div>
+            <i data-lucide="trophy" class="w-32 h-32 text-red-600 relative drop-shadow-2xl"></i>
         </div>
-        <h1 class="text-6xl font-black italic tracking-tighter">ELITE STAR</h1>
-        <div class="w-48 h-1 bg-white/5 rounded-full mt-10 overflow-hidden relative loader-bar"></div>
+        <h1 class="text-7xl font-black italic tracking-tighter text-white">ELITE STAR</h1>
+        <div class="w-64 h-1 bg-white/5 rounded-full mt-10 overflow-hidden relative loader-bar"></div>
+        <p class="text-[10px] uppercase font-black tracking-[0.5em] text-gray-500 mt-4">Node Combat Ready</p>
     </div>
 
     <!-- Main App Container -->
     <div id="app-container" class="hidden h-screen flex relative">
-        <!-- Background FX -->
+        <!-- Background Ambient FX -->
         <div class="fixed inset-0 pointer-events-none">
-            <div class="absolute top-0 right-0 w-[500px] h-[500px] bg-red-600/10 blur-[150px] animate-pulse rounded-full"></div>
-            <div class="absolute bottom-0 left-0 w-[500px] h-[500px] bg-orange-600/10 blur-[150px] animate-pulse rounded-full"></div>
+            <div class="absolute top-0 right-0 w-[600px] h-[600px] bg-red-600/10 blur-[150px] animate-pulse rounded-full"></div>
+            <div class="absolute bottom-0 left-0 w-[600px] h-[600px] bg-orange-600/10 blur-[150px] animate-pulse rounded-full"></div>
         </div>
 
-        <!-- Sidebar Navigation -->
-        <nav class="hidden lg:flex w-24 flex-col items-center py-8 bg-black/40 backdrop-blur-3xl border-r border-white/5 z-50">
-            <div class="mb-12"><i data-lucide="zap" class="text-red-600 w-8 h-8"></i></div>
-            <div class="flex flex-col space-y-8 flex-1">
+        <!-- Sidebar Navigation (Desktop) -->
+        <nav class="hidden lg:flex w-24 flex-col items-center py-10 bg-black/40 backdrop-blur-3xl border-r border-white/5 z-50">
+            <div class="mb-16"><i data-lucide="zap" class="text-red-600 w-10 h-10 drop-shadow-lg"></i></div>
+            <div class="flex flex-col space-y-10 flex-1">
                 <button onclick="switchTab('home')" class="p-4 rounded-2xl transition-all hover:bg-white/5 text-gray-500 hover:text-white"><i data-lucide="layout"></i></button>
                 <button onclick="switchTab('comms')" class="p-4 rounded-2xl transition-all hover:bg-white/5 text-gray-500 hover:text-white"><i data-lucide="message-square"></i></button>
                 <button onclick="switchTab('wallet')" class="p-4 rounded-2xl transition-all hover:bg-white/5 text-gray-500 hover:text-white"><i data-lucide="wallet"></i></button>
                 <button onclick="switchTab('search')" class="p-4 rounded-2xl transition-all hover:bg-white/5 text-gray-500 hover:text-white"><i data-lucide="search"></i></button>
             </div>
-            <div class="flex flex-col space-y-6">
-                <button id="nav-admin" onclick="switchTab('admin')" class="hidden p-4 rounded-2xl transition-all hover:bg-red-600/10 text-red-500"><i data-lucide="shield"></i></button>
+            <div class="flex flex-col space-y-8">
+                <button id="nav-admin" onclick="switchTab('admin')" class="hidden p-4 rounded-2xl transition-all hover:bg-red-600/10 text-red-500 shadow-lg"><i data-lucide="shield"></i></button>
                 <button onclick="switchTab('profile')" class="p-4 rounded-2xl transition-all hover:bg-white/5 text-gray-500 hover:text-white"><i data-lucide="user"></i></button>
             </div>
         </nav>
 
         <!-- Content Area -->
         <div class="flex-1 flex flex-col min-w-0 z-40 relative">
-            <header class="h-20 flex items-center justify-between px-8 bg-white/5 backdrop-blur-md border-b border-white/5">
-                <h1 class="text-2xl font-black italic tracking-tighter text-red-500 uppercase">Elite Star</h1>
+            <header class="h-24 flex items-center justify-between px-10 bg-white/5 backdrop-blur-md border-b border-white/5">
+                <div class="flex items-center space-x-4">
+                    <h1 class="text-3xl font-black italic tracking-tighter text-red-500 uppercase">Elite Star</h1>
+                    <div class="h-6 w-px bg-white/10"></div>
+                    <span id="active-tab-label" class="text-[10px] font-black uppercase tracking-[0.3em] text-gray-500">Arena</span>
+                </div>
                 <div class="flex items-center space-x-6">
-                    <div class="bg-white/5 border border-white/10 px-4 py-2 rounded-2xl flex items-center space-x-3">
+                    <div class="bg-white/5 border border-white/10 px-5 py-2.5 rounded-[1.5rem] flex items-center space-x-3 group cursor-pointer hover:border-orange-500/30 transition-all">
                         <i data-lucide="wallet" class="w-4 h-4 text-orange-400"></i>
-                        <span id="header-balance" class="font-mono font-bold">₹0</span>
+                        <span id="header-balance" class="font-mono font-black text-lg">₹0</span>
                     </div>
+                    <button class="relative p-2 text-gray-500 hover:text-white transition-colors">
+                        <i data-lucide="bell" class="w-6 h-6"></i>
+                        <span class="absolute top-2 right-2 w-2 h-2 bg-red-600 rounded-full"></span>
+                    </button>
                 </div>
             </header>
 
-            <main class="flex-1 overflow-y-auto p-8 scrollbar-hide">
+            <main class="flex-1 overflow-y-auto p-10 scrollbar-hide">
                 
                 <!-- AI Tip Box -->
-                <div id="ai-tip-box" class="hidden bg-cyan-500/10 border border-cyan-500/30 p-4 rounded-2xl mb-8 text-xs italic text-cyan-100 flex items-center"></div>
+                <div id="ai-tip-box" class="hidden bg-cyan-500/10 border border-cyan-500/30 p-6 rounded-[2rem] mb-10 text-xs italic text-cyan-100 flex items-center shadow-2xl animate-in slide-in-from-top-4"></div>
 
                 <!-- Home Screen -->
-                <div id="home-screen" class="space-y-8">
-                    <h2 class="text-3xl font-black italic border-l-4 border-red-600 pl-4 uppercase tracking-tighter">Combat Lobby</h2>
-                    <div id="matches-grid" class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-8"></div>
+                <div id="home-screen" class="space-y-10">
+                    <div class="flex items-center justify-between">
+                        <h2 class="text-4xl font-black italic border-l-8 border-red-600 pl-6 uppercase tracking-tighter">Combat Lobby</h2>
+                        <button class="text-xs font-black uppercase tracking-widest text-gray-500 hover:text-red-500 transition-colors">Filters</button>
+                    </div>
+                    <div id="matches-grid" class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-10 pb-20"></div>
                 </div>
 
                 <!-- Wallet Screen -->
-                <div id="wallet-screen" class="hidden max-w-xl mx-auto space-y-8 py-10">
-                    <div class="h-56 rounded-[3rem] bg-gradient-to-br from-red-600 to-orange-600 p-10 relative overflow-hidden shadow-2xl">
-                        <i data-lucide="zap" class="absolute -right-10 -top-10 w-48 h-48 opacity-10"></i>
+                <div id="wallet-screen" class="hidden max-w-2xl mx-auto space-y-12 py-10">
+                    <div class="h-64 rounded-[3.5rem] bg-gradient-to-br from-red-600 to-orange-700 p-12 relative overflow-hidden shadow-[0_20px_50px_rgba(220,38,38,0.3)]">
+                        <i data-lucide="zap" class="absolute -right-16 -top-16 w-64 h-64 opacity-10"></i>
                         <div class="relative z-10 flex flex-col justify-between h-full">
                             <div>
-                                <p class="text-[10px] font-black uppercase tracking-[0.3em] opacity-60">Vault Combat Credits</p>
-                                <h3 id="wallet-balance-main" class="text-6xl font-black italic tracking-tighter">₹...</h3>
+                                <p class="text-[10px] font-black uppercase tracking-[0.5em] text-white/60 mb-2">Vault Combat Credits</p>
+                                <h3 id="wallet-balance-main" class="text-7xl font-black italic tracking-tighter">₹...</h3>
                             </div>
-                            <i data-lucide="credit-card" class="w-8 h-8 opacity-50"></i>
+                            <div class="flex justify-between items-end">
+                                <p class="text-[9px] font-mono tracking-widest uppercase opacity-40">Node_Node_Sync_Ready</p>
+                                <i data-lucide="credit-card" class="w-10 h-10 text-white/40"></i>
+                            </div>
                         </div>
                     </div>
-                    <div class="grid grid-cols-2 gap-4">
-                        <button class="bg-white/5 p-6 rounded-3xl border border-white/10 flex flex-col items-center hover:bg-white/10 transition-all group">
-                            <i data-lucide="plus" class="text-red-500 mb-2 group-hover:scale-125 transition-transform"></i>
-                            <span class="text-[10px] font-black uppercase">Top Up</span>
+                    <div class="grid grid-cols-2 gap-6">
+                        <button class="bg-white/5 p-10 rounded-[2.5rem] border border-white/10 flex flex-col items-center hover:bg-white/10 hover:border-red-500/40 transition-all group">
+                            <i data-lucide="plus" class="text-red-500 mb-4 w-10 h-10 group-hover:scale-125 transition-transform"></i>
+                            <span class="text-xs font-black uppercase tracking-[0.3em]">Top Up Credits</span>
                         </button>
-                        <button class="bg-white/5 p-6 rounded-3xl border border-white/10 flex flex-col items-center hover:bg-white/10 transition-all group">
-                            <i data-lucide="zap" class="text-orange-500 mb-2 group-hover:scale-125 transition-transform"></i>
-                            <span class="text-[10px] font-black uppercase">Withdraw</span>
+                        <button class="bg-white/5 p-10 rounded-[2.5rem] border border-white/10 flex flex-col items-center hover:bg-white/10 hover:border-orange-500/40 transition-all group">
+                            <i data-lucide="zap" class="text-orange-500 mb-4 w-10 h-10 group-hover:scale-125 transition-transform"></i>
+                            <span class="text-xs font-black uppercase tracking-[0.3em]">Withdraw Cash</span>
                         </button>
                     </div>
                 </div>
 
                 <!-- Admin Screen -->
-                <div id="admin-screen" class="hidden space-y-8">
-                    <h2 class="text-3xl font-black italic text-red-600 uppercase">Match Control Hub</h2>
-                    <div class="grid grid-cols-1 lg:grid-cols-3 gap-8">
-                        <div class="bg-white/5 p-6 rounded-[2rem] border border-white/10 h-fit space-y-4">
-                            <h4 class="text-xs font-black uppercase opacity-50">Broadcast New Arena</h4>
-                            <button onclick="createNewMatch()" class="w-full bg-red-600 py-3 rounded-xl font-black uppercase tracking-widest text-xs">Deploy New Match</button>
-                        </div>
-                        <div id="admin-matches-list" class="lg:col-span-2"></div>
+                <div id="admin-screen" class="hidden space-y-12">
+                    <div class="flex items-center justify-between">
+                        <h2 class="text-4xl font-black italic text-red-600 uppercase tracking-tighter">Match Engine Control</h2>
+                        <button onclick="createNewMatch()" class="bg-red-600 px-8 py-4 rounded-2xl font-black text-xs uppercase tracking-widest shadow-xl hover:scale-105 transition-transform">Deploy New Match</button>
                     </div>
+                    <div id="admin-matches-list" class="grid grid-cols-1 md:grid-cols-2 gap-8 pb-20"></div>
                 </div>
 
-                <!-- Profile Screen -->
-                <div id="profile-screen" class="hidden max-w-xl mx-auto py-10 space-y-8">
+                <!-- Profile Screen (Auth Gateway) -->
+                <div id="profile-screen" class="hidden max-w-2xl mx-auto py-10 space-y-12">
                     <div class="text-center">
-                        <div class="w-24 h-24 bg-white/5 rounded-3xl mx-auto flex items-center justify-center border-2 border-red-600 mb-6 shadow-2xl">
-                            <i data-lucide="user" class="w-12 h-12 text-gray-500"></i>
+                        <div class="w-32 h-32 bg-white/5 rounded-[2.5rem] mx-auto flex items-center justify-center border-4 border-red-600 mb-8 shadow-[0_0_40px_rgba(220,38,38,0.2)]">
+                            <i data-lucide="user" class="w-16 h-16 text-gray-500"></i>
                         </div>
-                        <h2 id="profile-name" class="text-3xl font-black italic uppercase tracking-tighter">...</h2>
-                        <p id="profile-phone" class="text-[10px] font-black uppercase tracking-widest text-gray-500 mt-2 italic"></p>
+                        <h2 id="profile-name" class="text-4xl font-black italic uppercase tracking-tighter">...</h2>
+                        <p id="profile-phone-display" class="text-[10px] font-black uppercase tracking-widest text-gray-600 mt-4 italic"></p>
                     </div>
 
-                    <div class="bg-white/5 p-8 rounded-[2rem] border border-white/10 space-y-6">
-                        <div class="space-y-4">
-                            <h4 class="text-xs font-black uppercase tracking-widest opacity-50">Authentication Required</h4>
-                            <input id="login-phone" type="tel" placeholder="Mobile Number" class="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-3 text-sm focus:border-red-500 transition-colors">
-                            <input id="login-pass" type="password" placeholder="Set Secure Password" class="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-3 text-sm focus:border-red-500 transition-colors">
-                            <button onclick="handleLogin()" class="w-full bg-white/5 border border-white/10 py-3 rounded-xl text-[10px] font-black uppercase tracking-widest hover:bg-white/10 transition-colors">Update Node Node</button>
+                    <div class="bg-white/5 p-12 rounded-[3.5rem] border border-white/10 space-y-8 shadow-2xl">
+                        <div id="auth-form" class="space-y-6">
+                            <h4 class="text-xs font-black uppercase tracking-[0.4em] text-gray-500 text-center mb-8">System Authentication</h4>
+                            
+                            <div id="login-user-group" class="hidden space-y-2">
+                                <p class="text-[10px] font-black uppercase text-gray-600 ml-4">Choose Username</p>
+                                <input id="login-user" type="text" placeholder="Gamer ID" class="w-full bg-black/60 border border-white/10 rounded-2xl px-6 py-4 text-sm focus:border-red-500 transition-colors">
+                            </div>
+
+                            <div class="space-y-2">
+                                <p class="text-[10px] font-black uppercase text-gray-600 ml-4">Combat Number</p>
+                                <input id="login-phone" type="tel" placeholder="Mobile Number" class="w-full bg-black/60 border border-white/10 rounded-2xl px-6 py-4 text-sm focus:border-red-500 transition-colors">
+                            </div>
+
+                            <div class="space-y-2">
+                                <p class="text-[10px] font-black uppercase text-gray-600 ml-4">Secure Key</p>
+                                <input id="login-pass" type="password" placeholder="Password" class="w-full bg-black/60 border border-white/10 rounded-2xl px-6 py-4 text-sm focus:border-red-500 transition-colors">
+                            </div>
+
+                            <button onclick="handleAuth()" class="w-full bg-white/5 border border-white/10 py-5 rounded-2xl text-[10px] font-black uppercase tracking-[0.5em] hover:bg-white/10 hover:border-red-500/50 transition-all mt-6 shadow-lg">
+                                <span id="auth-btn-text">ACCESS NODE</span>
+                            </button>
+
+                            <p onclick="toggleAuthMode()" id="auth-toggle-text" class="text-center text-[9px] font-black uppercase text-gray-500 hover:text-white cursor-pointer tracking-widest mt-6">New player? Register</p>
                         </div>
-                        <button onclick="handleLogout()" class="w-full flex items-center justify-center space-x-2 text-red-500 font-black text-[10px] uppercase tracking-widest pt-4 border-t border-white/5">
-                            <i data-lucide="log-out" class="w-4 h-4"></i> <span>Terminate Session</span>
+
+                        <button onclick="handleLogout()" class="w-full flex items-center justify-center space-x-3 text-red-500 font-black text-[10px] uppercase tracking-[0.5em] pt-10 border-t border-white/5 hover:text-red-400 transition-colors group">
+                            <i data-lucide="log-out" class="w-4 h-4 group-hover:translate-x-1 transition-transform"></i> <span>Terminate Session</span>
                         </button>
                     </div>
                 </div>
 
-                <!-- Comms/Search Placeholders -->
-                <div id="comms-screen" class="hidden h-full flex flex-col items-center justify-center opacity-30 grayscale"><i data-lucide="message-square" class="w-24 h-24 mb-4"></i><p class="font-black uppercase tracking-widest">Signal Encrypted</p></div>
-                <div id="search-screen" class="hidden h-full flex flex-col items-center justify-center opacity-30 grayscale"><i data-lucide="target" class="w-24 h-24 mb-4"></i><p class="font-black uppercase tracking-widest">Scanning Signals...</p></div>
+                <!-- Empty Placeholders -->
+                <div id="comms-screen" class="hidden h-full flex flex-col items-center justify-center opacity-20 grayscale py-20">
+                    <i data-lucide="message-square" class="w-32 h-32 mb-6"></i>
+                    <p class="font-black italic uppercase tracking-[0.5em]">Nexus Signal Offline</p>
+                </div>
+                <div id="search-screen" class="hidden h-full flex flex-col items-center justify-center opacity-20 grayscale py-20">
+                    <i data-lucide="target" class="w-32 h-32 mb-6"></i>
+                    <p class="font-black italic uppercase tracking-[0.5em]">Scanning Enemy Radio</p>
+                </div>
 
             </main>
 
-            <!-- Mobile Navbar -->
-            <footer class="lg:hidden h-20 bg-black/60 backdrop-blur-3xl border-t border-white/10 flex items-center justify-around px-2 z-50">
-                <button onclick="switchTab('home')" class="p-3 text-gray-500 hover:text-white transition-all"><i data-lucide="layout"></i></button>
-                <button onclick="switchTab('wallet')" class="p-3 text-gray-500 hover:text-white transition-all"><i data-lucide="wallet"></i></button>
-                <button onclick="switchTab('search')" class="p-3 text-gray-500 hover:text-white transition-all"><i data-lucide="search"></i></button>
-                <button onclick="switchTab('profile')" class="p-3 text-gray-500 hover:text-white transition-all"><i data-lucide="user"></i></button>
+            <!-- Mobile Navbar (Bottom) -->
+            <footer class="lg:hidden h-24 bg-black/80 backdrop-blur-3xl border-t border-white/10 flex items-center justify-around px-4 z-50">
+                <button onclick="switchTab('home')" class="p-4 text-gray-500 hover:text-white transition-all"><i data-lucide="layout" class="w-6 h-6"></i></button>
+                <button onclick="switchTab('wallet')" class="p-4 text-gray-500 hover:text-white transition-all"><i data-lucide="wallet" class="w-6 h-6"></i></button>
+                <button onclick="switchTab('search')" class="p-4 text-gray-500 hover:text-white transition-all"><i data-lucide="search" class="w-6 h-6"></i></button>
+                <button onclick="switchTab('profile')" class="p-4 text-gray-500 hover:text-white transition-all"><i data-lucide="user" class="w-6 h-6"></i></button>
             </footer>
         </div>
     </div>
 
-    <!-- Modal for Slots -->
-    <div id="slot-modal" class="hidden fixed inset-0 z-[150] bg-black/80 backdrop-blur-sm flex items-center justify-center p-6">
-        <div class="bg-[#0A0E17] border border-white/10 rounded-[2.5rem] w-full max-w-2xl overflow-hidden shadow-2xl">
-            <div class="p-6 border-b border-white/5 flex justify-between items-center">
-                <h3 class="font-black italic uppercase tracking-tighter text-red-500">Select Combat Slot</h3>
-                <button onclick="closeModal()"><i data-lucide="x" class="w-6 h-6 text-gray-500"></i></button>
+    <!-- Modal for Slot Selection -->
+    <div id="slot-modal" class="hidden fixed inset-0 z-[150] bg-black/90 backdrop-blur-xl flex items-center justify-center p-6 animate-in fade-in duration-300">
+        <div class="bg-[#0A0E17] border border-white/10 rounded-[3rem] w-full max-w-4xl overflow-hidden shadow-[0_0_100px_rgba(220,38,38,0.2)]">
+            <div class="p-8 border-b border-white/5 flex justify-between items-center">
+                <h3 class="font-black italic uppercase tracking-tighter text-red-500 text-2xl">Select Combat Slot</h3>
+                <button onclick="closeModal()" class="p-2 hover:bg-white/10 rounded-xl transition-colors"><i data-lucide="x" class="w-8 h-8 text-gray-500"></i></button>
             </div>
-            <div id="slot-modal-body" class="max-h-[60vh] overflow-y-auto scrollbar-hide"></div>
-            <div class="p-6 bg-white/5 text-[10px] font-black uppercase text-gray-500 italic">Rules: Entry fee will be auto-debited.</div>
+            <div id="slot-modal-body" class="max-h-[60vh] overflow-y-auto scrollbar-hide bg-black/20"></div>
+            <div class="p-8 bg-white/5 flex justify-between items-center text-[10px] font-black uppercase text-gray-500 italic tracking-widest">
+                <span>Rules: Protocol 4 - Atomic Debit Enabled</span>
+                <span class="text-red-500">Pick carefully, soldier</span>
+            </div>
         </div>
     </div>
 
-    <!-- Global Toast -->
+    <!-- Global System Toast -->
     <div id="toast" class="hidden"></div>
 
 </body>
